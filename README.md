@@ -45,7 +45,7 @@ See `/report` for the full design doc, governance model, and user-journey mappin
 3. **Configure environment variables:**
    ```bash
    cp .env.example .env
-   # then fill in your ANTHROPIC_API_KEY
+   # then fill in your gemini_model_api
    ```
 
 4. **Run the API:**
