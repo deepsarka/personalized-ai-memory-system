@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  # Graph memory store — temporal facts, entities, relationships (Stage 3 of lifecycle)
+  # Also provides the built-in vector index for semantic retrieval (Stage 4), so we
+  # don't need a separate Qdrant service.
+  neo4j:
+    image: neo4j:5-community
+    container_name: memory-neo4j
+    ports:
+      - "7474:7474"   # Browser console: http://localhost:7474
+      - "7687:7687"   # Bolt driver port (used by the Python neo4j driver)
+    environment:
+      - NEO4J_AUTH=neo4j/testpassword123
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Event transport — durable queue for interaction events (Stage 1: Capture and authorize)
+  # Redpanda is Kafka-API-compatible but a single lightweight container (no ZooKeeper).
+  redpanda:
+    image: redpandadata/redpanda:v24.1.1
+    container_name: memory-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+    ports:
+      - "9092:9092"   # Kafka-compatible API
+
+  # Operational store — consent state, ingestion status, tool audit, feedback, deletion jobs
+  postgres:
+    image: postgres:16-alpine
+    container_name: memory-postgres
+    environment:
+      - POSTGRES_USER=memory_admin
+      - POSTGRES_PASSWORD=devpassword123
+      - POSTGRES_DB=memory_ops
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory_admin -d memory_ops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cache — short-lived subject-scoped caching, rate limiting, idempotency support
+  # Valkey is the open-source, license-free fork of Redis (drop-in compatible).
+  valkey:
+    image: valkey/valkey:7-alpine
+    container_name: memory-valkey
+    ports:
+      - "6379:6379"
+
+volumes:
+  neo4j_data:
+  postgres_data:
