@@ -191,6 +191,23 @@ def _embedding_text(
     )
 
 
+# Bidirectional pairing between a preference predicate and its exclusion
+# counterpart. Used by _SUPERSEDE_QUERY so that excluding something closes
+# the matching preference for the same object_value (and vice versa: newly
+# preferring something you'd previously excluded closes the exclusion).
+# Predicates with no dedicated excludes_*/prefers_* counterpart (tempo,
+# activity_context, time_of_day, vocal_style, general_*) simply have no
+# entry -- there is nothing for them to be paired against.
+_PREDICATE_COUNTERPART = {
+    "prefers_mood": "excludes_mood",
+    "excludes_mood": "prefers_mood",
+    "prefers_genre": "excludes_genre",
+    "excludes_genre": "prefers_genre",
+    "prefers_artist": "excludes_artist",
+    "excludes_artist": "prefers_artist",
+}
+
+
 # ======================================================================
 # IDEMPOTENT FACT CREATION
 # ======================================================================
@@ -266,10 +283,38 @@ WITH s, f
 
 OPTIONAL MATCH (s)-[:HAS_FACT]->(old:Fact)
 WHERE old.fact_id <> $fact_id
-  AND old.predicate = $predicate
   AND old.valid_until IS NULL
+  AND (
+        // Same predicate: always close an exact literal duplicate
+        // (same object_value); only close OTHER object_values under the
+        // same predicate when this write is a genuine correction
+        // ($broad_match), e.g. a single-valued predicate like
+        // prefers_tempo being replaced. A plain new preference
+        // (prefers_genre/lo-fi) must NOT close a different value under
+        // the same predicate (prefers_genre/jazz) just because they
+        // share a predicate -- multiple simultaneous preferences of the
+        // same type are valid and must coexist.
+        (
+            old.predicate = $predicate
+            AND (old.object_value = $object_value OR $broad_match)
+        )
+        OR
+        // Paired predicate: an exclusion (excludes_genre/X) must close
+        // the matching preference (prefers_genre/X) for the SAME
+        // object_value, and vice versa (re-liking something you'd
+        // previously excluded closes the exclusion). This is the piece
+        // that was missing entirely -- excludes_* and prefers_* are
+        // different predicate strings, so plain predicate equality
+        // above never caught this case, which is why a rejected
+        // preference kept resurfacing as still "valid" after a
+        // correction.
+        (
+            old.predicate = $counterpart_predicate
+            AND old.object_value = $object_value
+        )
+      )
 
-WITH collect(old) AS old_facts
+WITH collect(DISTINCT old) AS old_facts
 FOREACH (old IN old_facts | SET old.valid_until = $valid_from)
 
 RETURN size(old_facts) AS superseded_count
@@ -363,6 +408,21 @@ async def write_fact(
             fact.source_event_idempotency_key,
         "raw_text": fact.raw_text,
         "embedding": embedding,
+        # Paired predicate for exclusion<->preference closure (see
+        # _PREDICATE_COUNTERPART). Empty string is a safe "never matches"
+        # sentinel for predicates with no counterpart, since a real
+        # Neo4j predicate value is never empty.
+        "counterpart_predicate": _PREDICATE_COUNTERPART.get(
+            fact.predicate, ""
+        ),
+        # Only a genuine correction (fact_type=correction) is allowed to
+        # broadly replace ANY prior value under the same predicate,
+        # regardless of object_value -- e.g. a single-valued predicate
+        # like prefers_tempo being replaced outright. A plain new
+        # preference must not have this power, or multiple simultaneous
+        # preferences (several liked genres) would keep collapsing down
+        # to just the most recent one.
+        "broad_match": fact.fact_type == FactType.CORRECTION,
     }
 
     async with driver.session() as session:

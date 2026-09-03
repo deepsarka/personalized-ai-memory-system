@@ -39,6 +39,7 @@ def _make_fact(
     subject_id: str,
     object_value: str = "classical",
     predicate: str = "prefers_genre",
+    fact_type: FactType = FactType.PREFERENCE,
     valid_from: datetime | None = None,
     valid_until: datetime | None = None,
 ) -> ExtractedFact:
@@ -49,7 +50,7 @@ def _make_fact(
         source=FactSource.EXPLICIT,
         confidence=0.9,
         policy_class=PolicyClass.STANDARD,
-        fact_type=FactType.PREFERENCE,
+        fact_type=fact_type,
         predicate=predicate,
         object_value=object_value,
         valid_from=valid_from or datetime.now(timezone.utc),
@@ -156,3 +157,143 @@ async def test_future_fact_is_not_retrieved(retriever):
     )
 
     assert all(r.fact_id != fact.fact_id for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Supersession / correction regression tests.
+#
+# graph/writer.py's _SUPERSEDE_QUERY used to match superseding facts on
+# predicate alone, ignoring object_value. That caused two bugs reported in
+# production:
+#
+#   1. Stating two simultaneous preferences of the same predicate (e.g.
+#      "I love jazz and lo-fi") silently closed the first one, because the
+#      second write's supersede query matched ANY old fact with the same
+#      predicate, regardless of object_value.
+#
+#   2. An explicit rejection ("I don't like jazz anymore") produces an
+#      excludes_genre/jazz fact (see processing/extractor.py's correction
+#      normalization), but that fact's supersede query only looked for old
+#      facts with predicate=excludes_genre -- the original preference was
+#      stored as predicate=prefers_genre, a different string, so it was
+#      never closed and kept resurfacing as "still valid" after the
+#      correction.
+#
+# These tests write facts directly via graph.writer.write_fact (bypassing
+# Gemini extraction, which isn't available/deterministic in CI) to pin down
+# the graph-level contract precisely.
+# ---------------------------------------------------------------------------
+
+
+async def _facts_for_subject(retriever, subject_id: str, query: str = "What music do I like?", top_k: int = 20):
+    embedder = QueryEmbedder()
+    query_embedding = embedder.embed(query)
+    return retriever.retrieve(
+        query_embedding,
+        RetrievalQuery(subject_id=subject_id, query=query, top_k=top_k),
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_simultaneous_preferences_both_remain_valid(retriever):
+    """
+    Stating two preferences under the same predicate (two liked genres)
+    must NOT cause the first to supersede the second. Before the fix, the
+    second write's broad predicate-only match silently closed the first.
+    """
+    subject_id = f"test-subject-{uuid.uuid4().hex}"
+
+    jazz = _make_fact(subject_id, object_value="jazz", predicate="prefers_genre")
+    await write_fact(jazz)
+
+    lofi = _make_fact(subject_id, object_value="lo-fi", predicate="prefers_genre")
+    await write_fact(lofi)
+
+    results = await _facts_for_subject(retriever, subject_id)
+    returned_ids = {r.fact_id for r in results}
+
+    assert jazz.fact_id in returned_ids, "earlier preference was wrongly superseded by a later, unrelated one"
+    assert lofi.fact_id in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_exclusion_closes_matching_preference(retriever):
+    """
+    An exclusion (excludes_genre/X) must close the earlier preference
+    (prefers_genre/X) for the SAME object_value. This is the exact bug
+    reported in production: rejecting a genre didn't stop it from being
+    recommended, because excludes_genre and prefers_genre are different
+    predicate strings and the old query never matched them together.
+    """
+    subject_id = f"test-subject-{uuid.uuid4().hex}"
+
+    lofi_pref = _make_fact(subject_id, object_value="lo-fi", predicate="prefers_genre")
+    await write_fact(lofi_pref)
+
+    lofi_exclusion = _make_fact(
+        subject_id,
+        object_value="lo-fi",
+        predicate="excludes_genre",
+        fact_type=FactType.EXCLUSION,
+    )
+    await write_fact(lofi_exclusion)
+
+    results = await _facts_for_subject(retriever, subject_id)
+    returned_ids = {r.fact_id for r in results}
+
+    assert lofi_pref.fact_id not in returned_ids, "rejected preference is still 'valid' and being recommended"
+    assert lofi_exclusion.fact_id in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_exclusion_does_not_close_unrelated_preference(retriever):
+    """
+    Excluding one genre must not close a *different* genre's preference.
+    Guards against an overcorrection where the fix above is made too broad
+    (e.g. matching on predicate alone instead of predicate+object_value).
+    """
+    subject_id = f"test-subject-{uuid.uuid4().hex}"
+
+    jazz_pref = _make_fact(subject_id, object_value="jazz", predicate="prefers_genre")
+    await write_fact(jazz_pref)
+
+    lofi_exclusion = _make_fact(
+        subject_id,
+        object_value="lo-fi",
+        predicate="excludes_genre",
+        fact_type=FactType.EXCLUSION,
+    )
+    await write_fact(lofi_exclusion)
+
+    results = await _facts_for_subject(retriever, subject_id)
+    returned_ids = {r.fact_id for r in results}
+
+    assert jazz_pref.fact_id in returned_ids, "unrelated preference was wrongly closed by an exclusion of a different value"
+
+
+@pytest.mark.asyncio
+async def test_correction_broadly_replaces_single_valued_predicate(retriever):
+    """
+    A genuine correction (fact_type=correction), used for single-valued
+    predicates like tempo, should still broadly replace ANY prior value
+    under that predicate -- this is the one case where predicate-only
+    matching is intentional and must keep working.
+    """
+    subject_id = f"test-subject-{uuid.uuid4().hex}"
+
+    energetic = _make_fact(subject_id, object_value="energetic", predicate="prefers_tempo")
+    await write_fact(energetic)
+
+    calm = _make_fact(
+        subject_id,
+        object_value="calm",
+        predicate="prefers_tempo",
+        fact_type=FactType.CORRECTION,
+    )
+    await write_fact(calm)
+
+    results = await _facts_for_subject(retriever, subject_id)
+    returned_ids = {r.fact_id for r in results}
+
+    assert energetic.fact_id not in returned_ids, "correction did not replace the old single-valued preference"
+    assert calm.fact_id in returned_ids
