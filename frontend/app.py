@@ -1,3 +1,4 @@
+import os
 
 from datetime import datetime, timezone
 import html
@@ -44,7 +45,11 @@ apply_styles()
 # ====================================================================
 
 client = APIClient(
-    base_url="http://127.0.0.1:8000"
+    # In local dev this defaults to the FastAPI app running on localhost.
+    # In any real deployment, set API_BASE_URL to the backend's reachable
+    # URL (e.g. an internal service DNS name, or a public HTTPS URL) —
+    # frontend and backend are separate containers/hosts once deployed.
+    base_url=os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 )
 
 
@@ -1452,4 +1457,3 @@ with st.expander(
                     </div>
                     """
                 )
-

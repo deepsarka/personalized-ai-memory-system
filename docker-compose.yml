@@ -65,6 +65,57 @@ services:
     ports:
       - "6379:6379"
 
+  # Backend API — FastAPI app (ingestion, retrieval, chat, MCP server).
+  # Runs alembic migrations then starts uvicorn (see Dockerfile).
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: memory-api
+    env_file:
+      - .env
+    environment:
+      # Override host-facing values from .env with in-network service
+      # names, since containers reach each other by service name, not
+      # localhost, once everything runs under compose.
+      - NEO4J_URI=bolt://neo4j:7687
+      - POSTGRES_URL=postgresql://memory_admin:devpassword123@postgres:5432/memory_ops
+      - CACHE_URL=redis://valkey:6379/0
+      - REDPANDA_BOOTSTRAP_SERVERS=redpanda:9092
+    ports:
+      - "8000:8000"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+      valkey:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # Frontend — Streamlit UI, talks to the api service over the compose network.
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: memory-frontend
+    environment:
+      - API_BASE_URL=http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   neo4j_data:
   postgres_data:
