@@ -64,5 +64,6 @@ async def login(
             status_code=401,
             detail="Invalid email or password.",
         )
+    print("backend login successful for user:", user.email  )
 
     return build_auth_response(user)

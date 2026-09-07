@@ -1,15 +1,11 @@
-version: "3.9"
-
 services:
-  # Graph memory store — temporal facts, entities, relationships (Stage 3 of lifecycle)
-  # Also provides the built-in vector index for semantic retrieval (Stage 4), so we
-  # don't need a separate Qdrant service.
+  # Graph memory store
   neo4j:
     image: neo4j:5-community
     container_name: memory-neo4j
     ports:
-      - "7474:7474"   # Browser console: http://localhost:7474
-      - "7687:7687"   # Bolt driver port (used by the Python neo4j driver)
+      - "7474:7474"
+      - "7687:7687"
     environment:
       - NEO4J_AUTH=neo4j/testpassword123
       - NEO4J_PLUGINS=["apoc"]
@@ -21,8 +17,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Event transport — durable queue for interaction events (Stage 1: Capture and authorize)
-  # Redpanda is Kafka-API-compatible but a single lightweight container (no ZooKeeper).
+  # Event transport
   redpanda:
     image: redpandadata/redpanda:v24.1.1
     container_name: memory-redpanda
@@ -35,11 +30,17 @@ services:
       - --node-id=0
       - --check=false
       - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
     ports:
-      - "9092:9092"   # Kafka-compatible API
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
-  # Operational store — consent state, ingestion status, tool audit, feedback, deletion jobs
+  # Operational store
   postgres:
     image: postgres:16-alpine
     container_name: memory-postgres
@@ -57,16 +58,15 @@ services:
       timeout: 5s
       retries: 5
 
-  # Cache — short-lived subject-scoped caching, rate limiting, idempotency support
-  # Valkey is the open-source, license-free fork of Redis (drop-in compatible).
+  # Cache
   valkey:
     image: valkey/valkey:7-alpine
     container_name: memory-valkey
     ports:
       - "6379:6379"
+    restart: unless-stopped
 
-  # Backend API — FastAPI app (ingestion, retrieval, chat, MCP server).
-  # Runs alembic migrations then starts uvicorn (see Dockerfile).
+  # Backend API
   api:
     build:
       context: .
@@ -75,9 +75,6 @@ services:
     env_file:
       - .env
     environment:
-      # Override host-facing values from .env with in-network service
-      # names, since containers reach each other by service name, not
-      # localhost, once everything runs under compose.
       - NEO4J_URI=bolt://neo4j:7687
       - POSTGRES_URL=postgresql://memory_admin:devpassword123@postgres:5432/memory_ops
       - CACHE_URL=redis://valkey:6379/0
@@ -90,7 +87,7 @@ services:
       postgres:
         condition: service_healthy
       redpanda:
-        condition: service_started
+        condition: service_healthy
       valkey:
         condition: service_started
     healthcheck:
@@ -101,16 +98,16 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # Frontend — Streamlit UI, talks to the api service over the compose network.
+  # Main frontend — Vite React app
   frontend:
     build:
-      context: .
-      dockerfile: frontend/Dockerfile
+      context: ../spotify-ai-frontend
+      dockerfile: frontend.Dockerfile
     container_name: memory-frontend
     environment:
-      - API_BASE_URL=http://api:8000
+      - VITE_API_BASE_URL=http://localhost:8000
     ports:
-      - "8501:8501"
+      - "3001:3001"
     depends_on:
       api:
         condition: service_healthy

@@ -28,6 +28,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from auth.api import router as auth_router
 from auth.dependencies import get_current_user
@@ -169,6 +170,34 @@ app = FastAPI(
     ),
     version="0.1.0",
     lifespan=lifespan,
+)
+
+
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+#
+# The frontend (Next.js) runs on a different origin than this API in every
+# real deployment — localhost:3000 in dev, a vercel.app / custom domain in
+# production — so without this, the browser blocks every request before it
+# even reaches these routes, regardless of whether the frontend code is
+# correct. FRONTEND_ORIGINS is a comma-separated list so local + staging +
+# prod can all be allowed without a code change.
+_frontend_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:3000",
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_frontend_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
