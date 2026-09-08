@@ -57,7 +57,14 @@ def _key(session_id: str) -> str:
 def get_recent_messages(session_id: str) -> list[dict]:
     """Return this session's message history, oldest first. Empty list if none/expired."""
     client = get_client()
-    raw = client.get(_key(session_id))
+    try:
+        raw = client.get(_key(session_id))
+    except redis.exceptions.RedisError:
+        logger.warning(
+            "Session cache unavailable; continuing without conversation history"
+        )
+        return []
+
     if not raw:
         return []
     try:
@@ -78,7 +85,12 @@ def append_turn(session_id: str, user_text: str, assistant_text: str) -> None:
     messages.append({"role": "assistant", "text": assistant_text})
     messages = messages[-_MAX_MESSAGES_STORED:]
 
-    client.set(_key(session_id), json.dumps(messages), ex=_SESSION_TTL_SECONDS)
+    try:
+        client.set(_key(session_id), json.dumps(messages), ex=_SESSION_TTL_SECONDS)
+    except redis.exceptions.RedisError:
+        logger.warning(
+            "Session cache unavailable; response was returned without storing history"
+        )
 
 
 def format_conversation_history(messages: list[dict]) -> str:

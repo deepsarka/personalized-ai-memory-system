@@ -161,7 +161,7 @@ class FactExtractor:
         self.client = genai.Client(
             api_key=api_key or os.getenv("GEMINI_API_KEY")
         )
-        self.model = "gemini-3.5-flash-lite"
+        self.model = "gemini-3.5-flash"
 
     def extract(
         self,
