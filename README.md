@@ -260,16 +260,4 @@ None of this changed the architecture from the original design — PostgreSQL an
 remain separate as specified, and the fixes are all bugs or deployment gaps, not design
 changes.
 
-## Notes on things you may still want to decide
 
-These aren't blockers, just open choices left for you:
-
-- **Scaling the embedding model.** `all-MiniLM-L6-v2` is fine for a single-user-scoped
-  memory store with a handful of facts per subject; if fact volume grows substantially,
-  consider a managed embedding API or a larger local model.
-- **Redpanda persistence.** The current `docker-compose.yml` Redpanda service doesn't
-  mount a volume, so its data doesn't survive a container recreate. This is fine given the
-  outbox pattern (PostgreSQL is the durable source of truth and can always republish), but
-  worth knowing.
-- **Backups.** If you self-host Neo4j/Postgres (Option A), set up a periodic backup job for
-  the `neo4j_data`/`postgres_data` volumes — compose volumes alone aren't a backup strategy.
